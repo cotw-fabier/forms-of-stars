@@ -1,0 +1,57 @@
+{
+  "name": "forms-of-stars",
+  "version": "0.1.0",
+  "description": "Schema-driven forms, submissions, notifications, and commerce for Astro. Inspired by Gravity Forms.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "src",
+    "README.md"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./integration": {
+      "types": "./dist/integration/index.d.ts",
+      "import": "./dist/integration/index.js"
+    },
+    "./server": {
+      "types": "./dist/server/index.d.ts",
+      "import": "./dist/server/index.js"
+    },
+    "./components/*.astro": "./src/components/*.astro",
+    "./types": {
+      "types": "./dist/types/index.d.ts",
+      "import": "./dist/types/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsc -p tsconfig.json --watch",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "clean": "rm -rf dist"
+  },
+  "keywords": [
+    "astro",
+    "astro-integration",
+    "astro-component",
+    "forms",
+    "form-builder",
+    "schema"
+  ],
+  "peerDependencies": {
+    "astro": "^4.0.0 || ^5.0.0"
+  },
+  "dependencies": {
+    "zod": "^3.23.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "astro": "^5.0.0",
+    "typescript": "^5.4.0"
+  }
+}

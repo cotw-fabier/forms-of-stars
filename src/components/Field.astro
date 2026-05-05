@@ -1,0 +1,133 @@
+---
+import type { FieldDefinition } from '../types/index.js';
+
+interface Props {
+  field: FieldDefinition;
+  value?: unknown;
+  error?: string;
+}
+
+const { field, value, error } = Astro.props;
+
+const baseAttrs = {
+  id: `field-${field.id}`,
+  name: field.id,
+  required: field.required,
+  placeholder: field.placeholder,
+  'aria-invalid': error ? 'true' : undefined,
+  'aria-describedby': error ? `field-${field.id}-error` : field.description ? `field-${field.id}-desc` : undefined,
+  ...(field.attributes ?? {}),
+};
+
+const wrapperClass = ['af-field', `af-field--${field.type}`, field.cssClass, error && 'af-field--error']
+  .filter(Boolean)
+  .join(' ');
+
+const conditionalAttrs = field.conditionalLogic
+  ? { 'data-af-conditional': JSON.stringify(field.conditionalLogic) }
+  : {};
+---
+
+{field.type === 'html' ? (
+  <div class={wrapperClass} {...conditionalAttrs} set:html={field.content ?? ''} />
+) : (
+  <div class={wrapperClass} {...conditionalAttrs}>
+    {field.type !== 'hidden' && field.type !== 'consent' && (
+      <label for={baseAttrs.id} class="af-field__label">
+        {field.label}
+        {field.required && <span class="af-field__required" aria-hidden="true"> *</span>}
+      </label>
+    )}
+
+    {field.description && field.type !== 'hidden' && (
+      <p id={`field-${field.id}-desc`} class="af-field__description">{field.description}</p>
+    )}
+
+    {field.type === 'textarea' ? (
+      <textarea {...baseAttrs} rows={Number(field.attributes?.rows ?? 5)}>{value as string ?? ''}</textarea>
+    ) : field.type === 'select' ? (
+      <select {...baseAttrs}>
+        {!field.required && <option value="">— Select —</option>}
+        {field.options?.map((opt) => (
+          <option value={opt.value} selected={value === opt.value || (value === undefined && opt.default)}>
+            {opt.label}
+          </option>
+        ))}
+      </select>
+    ) : field.type === 'multiselect' ? (
+      <select {...baseAttrs} multiple>
+        {field.options?.map((opt) => (
+          <option value={opt.value} selected={Array.isArray(value) && value.includes(opt.value)}>
+            {opt.label}
+          </option>
+        ))}
+      </select>
+    ) : field.type === 'radio' ? (
+      <fieldset class="af-field__group">
+        {field.options?.map((opt) => (
+          <label class="af-field__option">
+            <input
+              type="radio"
+              name={field.id}
+              value={opt.value}
+              required={field.required}
+              checked={value === opt.value || (value === undefined && opt.default)}
+            />
+            <span>{opt.label}</span>
+          </label>
+        ))}
+      </fieldset>
+    ) : field.type === 'checkbox' && field.options && field.options.length > 0 ? (
+      <fieldset class="af-field__group">
+        {field.options.map((opt) => (
+          <label class="af-field__option">
+            <input
+              type="checkbox"
+              name={field.id}
+              value={opt.value}
+              checked={Array.isArray(value) ? value.includes(opt.value) : opt.default}
+            />
+            <span>{opt.label}</span>
+          </label>
+        ))}
+      </fieldset>
+    ) : field.type === 'consent' ? (
+      <label class="af-field__option af-field__option--consent">
+        <input
+          type="checkbox"
+          {...baseAttrs}
+          value="true"
+          checked={value === true || value === 'true'}
+        />
+        <span>{field.label}{field.required && <span aria-hidden="true"> *</span>}</span>
+      </label>
+    ) : field.type === 'file' ? (
+      <input type="file" {...baseAttrs} />
+    ) : (
+      <input
+        type={field.type === 'datetime' ? 'datetime-local' : field.type === 'product' ? 'hidden' : field.type}
+        {...baseAttrs}
+        value={value !== undefined ? String(value) : field.defaultValue !== undefined ? String(field.defaultValue) : ''}
+      />
+    )}
+
+    {field.type === 'product' && field.price !== undefined && (
+      <div class="af-field__product">
+        <span class="af-field__product-label">{field.label}</span>
+        <span class="af-field__product-price">${field.price.toFixed(2)}</span>
+        <input
+          type="number"
+          name={`${field.id}_qty`}
+          min="0"
+          step="1"
+          value={1}
+          aria-label={`Quantity for ${field.label}`}
+        />
+      </div>
+    )}
+
+    {error && (
+      <p id={`field-${field.id}-error`} class="af-field__error" role="alert">{error}</p>
+    )}
+  </div>
+)}

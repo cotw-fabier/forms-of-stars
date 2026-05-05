@@ -1,0 +1,154 @@
+---
+/**
+ * <Form id="contact" /> — drop-in form renderer.
+ *
+ * The form id must match a registered FormDefinition. Posts to the integration's
+ * mounted endpoint (default `/api/forms/[id]`).
+ */
+import { getForm } from '../core/registry.js';
+import Field from './Field.astro';
+
+interface Props {
+  id: string;
+  /** Override the action URL (default: `/api/forms/{id}`) */
+  action?: string;
+  /** Pre-fill values, e.g. for edit-after-submit flows */
+  values?: Record<string, unknown>;
+  /** Server-side errors to display, keyed by field id */
+  errors?: Record<string, string>;
+  /** Optional class on the outer <form> element */
+  class?: string;
+}
+
+const { id, action: actionOverride, values = {}, errors = {}, class: className } = Astro.props;
+
+const form = getForm(id);
+if (!form) {
+  throw new Error(`[forms-of-stars] Form "${id}" is not registered. Did you add it to the integration's "forms" config?`);
+}
+
+const action = actionOverride ?? form.action ?? `/api/forms/${form.id}`;
+
+const url = new URL(Astro.request.url);
+const successFlag = url.searchParams.get('astro_forms_success') === '1';
+const errorFlag = url.searchParams.get('astro_forms_error') === '1';
+
+// Surface the first message-type confirmation for inline display
+const messageConfirmation = form.confirmations?.find((c) => c.type === 'message');
+---
+
+<form
+  method="POST"
+  action={action}
+  class:list={['af-form', className]}
+  data-af-form-id={form.id}
+  enctype={form.fields.some((f) => f.type === 'file') ? 'multipart/form-data' : undefined}
+>
+  {successFlag && messageConfirmation?.type === 'message' && (
+    <div class="af-form__success" role="status">{messageConfirmation.message}</div>
+  )}
+
+  {errorFlag && (
+    <div class="af-form__error-banner" role="alert">
+      Please fix the errors below and resubmit.
+    </div>
+  )}
+
+  {form.honeypot && (
+    <div class="af-honeypot" aria-hidden="true" style="position:absolute;left:-9999px;height:0;overflow:hidden">
+      <label>
+        Leave this field empty
+        <input type="text" name={form.honeypot} tabindex="-1" autocomplete="off" />
+      </label>
+    </div>
+  )}
+
+  {form.fields.map((field) => (
+    <Field
+      field={field}
+      value={values[field.id]}
+      error={errors[field.id]}
+    />
+  ))}
+
+  <button type="submit" class="af-form__submit">
+    {form.submitLabel ?? 'Submit'}
+  </button>
+</form>
+
+<script>
+  // Tiny progressive-enhancement script: handles conditional logic on the client.
+  // Fields with [data-af-conditional] are shown/hidden based on other field values.
+  (() => {
+    const forms = document.querySelectorAll<HTMLFormElement>('form.af-form');
+    forms.forEach((form) => {
+      const conditionalFields = form.querySelectorAll<HTMLElement>('[data-af-conditional]');
+      if (conditionalFields.length === 0) return;
+
+      const evaluate = () => {
+        const data = new FormData(form);
+        conditionalFields.forEach((el) => {
+          try {
+            const logic = JSON.parse(el.dataset.afConditional ?? 'null');
+            if (!logic) return;
+            const matches = (logic.match === 'all' ? logic.rules.every : logic.rules.some).call(
+              logic.rules,
+              (rule: { fieldId: string; operator: string; value?: unknown }) => {
+                const actual = String(data.get(rule.fieldId) ?? '');
+                const expected = String(rule.value ?? '');
+                switch (rule.operator) {
+                  case 'equals': return actual === expected;
+                  case 'notEquals': return actual !== expected;
+                  case 'contains': return actual.includes(expected);
+                  case 'isEmpty': return actual === '';
+                  case 'isNotEmpty': return actual !== '';
+                  default: return false;
+                }
+              },
+            );
+            const visible = logic.action === 'show' ? matches : !matches;
+            (el as HTMLElement).style.display = visible ? '' : 'none';
+            // Disable hidden inputs so they don't fail required validation
+            el.querySelectorAll<HTMLInputElement>('input,select,textarea').forEach((input) => {
+              input.disabled = !visible;
+            });
+          } catch { /* malformed conditional — ignore */ }
+        });
+      };
+
+      form.addEventListener('input', evaluate);
+      form.addEventListener('change', evaluate);
+      evaluate();
+    });
+  })();
+</script>
+
+<style>
+  .af-form { display: flex; flex-direction: column; gap: 1rem; }
+  .af-field { display: flex; flex-direction: column; gap: 0.25rem; }
+  .af-field__label { font-weight: 600; }
+  .af-field__required { color: #c00; }
+  .af-field__description { font-size: 0.875rem; color: #666; margin: 0; }
+  .af-field__error { font-size: 0.875rem; color: #c00; margin: 0; }
+  .af-field--error input, .af-field--error select, .af-field--error textarea {
+    border-color: #c00;
+  }
+  .af-field__group { display: flex; flex-direction: column; gap: 0.25rem; border: 0; padding: 0; margin: 0; }
+  .af-field__option { display: flex; gap: 0.5rem; align-items: center; }
+  .af-field__product { display: flex; gap: 0.5rem; align-items: center; }
+  .af-form__submit {
+    align-self: flex-start;
+    padding: 0.6rem 1.2rem;
+    cursor: pointer;
+  }
+  .af-form__success {
+    padding: 0.75rem 1rem;
+    background: #e8f5e9;
+    border-left: 4px solid #2e7d32;
+  }
+  .af-form__error-banner {
+    padding: 0.75rem 1rem;
+    background: #fff4f4;
+    border-left: 4px solid #c00;
+  }
+</style>
