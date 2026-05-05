@@ -25,6 +25,15 @@ export function registerForm(form: FormDefinition): void {
   const registry = getRegistry();
   const existing = registry.get(form.id);
   if (existing && existing !== form) {
+    // Two distinct objects share an id. In dev, this is almost always Vite HMR
+    // re-evaluating the form module — the source is unchanged but `defineForm`
+    // produces a fresh reference. Replacing is the right move so the dev server
+    // doesn't crash on every save. In production, modules evaluate once, so a
+    // mismatched reference signals a real duplicate-id bug worth surfacing.
+    if (process.env.NODE_ENV !== 'production') {
+      registry.set(form.id, form);
+      return;
+    }
     throw new Error(
       `[forms-of-stars] Duplicate form id: "${form.id}". Form ids must be unique across the app.`,
     );
