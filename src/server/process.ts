@@ -21,11 +21,22 @@ import type {
 } from '../types/index.js';
 import { buildFormSchema } from '../validators/schema.js';
 import { evaluateConditional } from '../core/conditional.js';
+import {
+  resolveSpamConfig,
+  verifyTimestamp,
+  TIMESTAMP_FIELD,
+  type SpamConfig,
+  type RateLimiter,
+} from '../spam/index.js';
 
 export interface FormsRuntime {
   store: SubmissionStore;
   notificationDrivers: Map<string, NotificationDriver>;
   feedHandlers: Map<string, FeedHandler>;
+  /** Global spam-guard defaults — merged under per-form `form.spam`. */
+  spam?: SpamConfig;
+  /** Pluggable rate-limit store. Defaults to an in-memory limiter. */
+  rateLimiter?: RateLimiter;
   /** Optional logger — defaults to console. Compatible with Astro's logger. */
   logger?: { info: (message: string) => void; warn: (message: string) => void; error: (message: string) => void };
 }
@@ -39,6 +50,10 @@ export interface ProcessedResult {
   confirmation?: Confirmation;
   /** A feed (e.g. Stripe) requested a redirect that takes precedence over confirmation */
   redirect?: string;
+  /** Override the response status (e.g. 429 for rate limiting). */
+  status?: number;
+  /** Suggested Retry-After header value, in seconds. */
+  retryAfter?: number;
 }
 
 /**
@@ -93,14 +108,48 @@ export async function processSubmission(
     data = formDataToObject(await request.formData());
   }
 
-  // ── 2. honeypot ────────────────────────────────────────────────────────
-  if (form.honeypot && data[form.honeypot]) {
-    log.warn(`[forms-of-stars] Honeypot triggered on form "${form.id}" — silently dropping`);
-    // Pretend it succeeded so bots don't learn anything
-    return {
-      ok: true,
-      confirmation: { type: 'message', message: 'Thanks!' },
-    };
+  // ── 2. spam guard (honeypot, timestamp, rate limit) ───────────────────
+  const spam = resolveSpamConfig(form.spam, form.honeypot, runtime.spam, form.fields);
+  const clientIp = request.headers.get('x-forwarded-for')?.split(',')[0]?.trim()
+    ?? request.headers.get('cf-connecting-ip')
+    ?? 'unknown';
+
+  if (spam) {
+    // Honeypot — silent success so bots don't learn what tripped them.
+    if (spam.honeypot && data[spam.honeypot]) {
+      log.warn(`[forms-of-stars] Honeypot triggered on form "${form.id}" — silently dropping`);
+      return { ok: true, confirmation: { type: 'message', message: 'Thanks!' } };
+    }
+
+    // Time-to-submit token. Same silent-success treatment so attackers can't
+    // probe the bounds. Skip entirely when both windows are off (e.g. the
+    // consumer disabled timestamp checking but kept the honeypot).
+    if (spam.minSubmitMs !== null || spam.maxSubmitMs !== null) {
+      const verdict = verifyTimestamp(data[TIMESTAMP_FIELD], spam.secret, spam.minSubmitMs, spam.maxSubmitMs);
+      if (!verdict.ok) {
+        log.warn(`[forms-of-stars] Timestamp check failed (${verdict.reason}) on form "${form.id}" from ${clientIp}`);
+        return { ok: true, confirmation: { type: 'message', message: 'Thanks!' } };
+      }
+    }
+
+    // Per-IP rate limit. Unlike the silent layers above, we surface this as
+    // a 429 so a real user retrying doesn't see a fake success.
+    if (spam.rateLimit && runtime.rateLimiter) {
+      const verdict = await runtime.rateLimiter.check(
+        `${form.id}:${clientIp}`,
+        spam.rateLimit.max,
+        spam.rateLimit.windowMs,
+      );
+      if (!verdict.ok) {
+        log.warn(`[forms-of-stars] Rate limit hit on form "${form.id}" from ${clientIp}`);
+        return {
+          ok: false,
+          status: 429,
+          retryAfter: Math.ceil(verdict.retryAfterMs / 1000),
+          errors: { _form: 'Too many submissions — please try again in a moment.' },
+        };
+      }
+    }
   }
 
   // ── 3. validation ──────────────────────────────────────────────────────
@@ -187,5 +236,5 @@ export async function processSubmission(
 }
 
 function defaultConfirmation(): Confirmation {
-  return { type: 'message', message: 'Thanks! We received your submission.' };
+  return { type: 'message', message: 'Thank you for your form submission!' };
 }

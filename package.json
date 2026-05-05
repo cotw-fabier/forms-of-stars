@@ -23,6 +23,10 @@
       "types": "./dist/server/index.d.ts",
       "import": "./dist/server/index.js"
     },
+    "./runtime": {
+      "types": "./dist/runtime/index.d.ts",
+      "import": "./dist/runtime/index.js"
+    },
     "./components/*.astro": "./src/components/*.astro",
     "./types": {
       "types": "./dist/types/index.d.ts",

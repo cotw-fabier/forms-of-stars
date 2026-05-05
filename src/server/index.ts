@@ -48,10 +48,14 @@ function defaultResponder(
     || (request.headers.get('content-type') ?? '').includes('application/json');
 
   if (!result.ok) {
+    const status = result.status ?? 422;
+    const baseHeaders: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (result.retryAfter !== undefined) baseHeaders['Retry-After'] = String(result.retryAfter);
+
     if (wantsJson) {
       return new Response(JSON.stringify({ ok: false, errors: result.errors ?? {} }), {
-        status: 422,
-        headers: { 'Content-Type': 'application/json' },
+        status,
+        headers: baseHeaders,
       });
     }
     // For traditional form posts, redirect back with an error query string
@@ -62,15 +66,24 @@ function defaultResponder(
     return Response.redirect(url, 303);
   }
 
-  // A feed (e.g. Stripe Checkout) takes precedence
-  if (result.redirect) return Response.redirect(result.redirect, 303);
-
+  // JSON clients (AJAX) always get JSON, including the redirect URL as data —
+  // the client decides whether to navigate. Returning a 303 to a fetch() call
+  // either follows it transparently (wrong target rendered) or fails CORS,
+  // both of which break the AJAX flow.
   if (wantsJson) {
-    return new Response(JSON.stringify({ ok: true, confirmation: result.confirmation, submissionId: result.submission?.id }), {
-      status: 200,
-      headers: { 'Content-Type': 'application/json' },
-    });
+    return new Response(
+      JSON.stringify({
+        ok: true,
+        confirmation: result.confirmation,
+        redirect: result.redirect,
+        submissionId: result.submission?.id,
+      }),
+      { status: 200, headers: { 'Content-Type': 'application/json' } },
+    );
   }
+
+  // No-JS fallback: a feed (e.g. Stripe Checkout) takes precedence
+  if (result.redirect) return Response.redirect(result.redirect, 303);
 
   return confirmationToResponse(result.confirmation, request);
 }

@@ -1,12 +1,28 @@
 import type { FormDefinition } from '../types/index.js';
 
 /**
- * Module-scoped form registry. Forms are registered at integration setup
- * and looked up by id at runtime.
+ * Form registry. Pinned to globalThis for the same reason the server runtime
+ * is (see ../server/runtime.ts): the integration's `astro:config:setup` hook
+ * runs under Node's ESM loader (calling `registerForms`), while the auto-
+ * injected API route is evaluated inside Vite's SSR module pipeline (calling
+ * `getForm`). Those are separate module caches, so a plain module-level Map
+ * gives each side its own copy and `getForm` returns undefined → 404
+ * "Unknown form".
  */
-const registry = new Map<string, FormDefinition>();
+const REGISTRY_KEY = '__forms_of_stars_registry__';
+
+type GlobalWithRegistry = typeof globalThis & {
+  [REGISTRY_KEY]?: Map<string, FormDefinition>;
+};
+
+function getRegistry(): Map<string, FormDefinition> {
+  const g = globalThis as GlobalWithRegistry;
+  if (!g[REGISTRY_KEY]) g[REGISTRY_KEY] = new Map();
+  return g[REGISTRY_KEY]!;
+}
 
 export function registerForm(form: FormDefinition): void {
+  const registry = getRegistry();
   const existing = registry.get(form.id);
   if (existing && existing !== form) {
     throw new Error(
@@ -21,13 +37,13 @@ export function registerForms(forms: FormDefinition[]): void {
 }
 
 export function getForm(id: string): FormDefinition | undefined {
-  return registry.get(id);
+  return getRegistry().get(id);
 }
 
 export function getAllForms(): FormDefinition[] {
-  return Array.from(registry.values());
+  return Array.from(getRegistry().values());
 }
 
 export function clearRegistry(): void {
-  registry.clear();
+  getRegistry().clear();
 }

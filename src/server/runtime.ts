@@ -1,5 +1,6 @@
 import type { FormsRuntime } from './process.js';
 import { MemorySubmissionStore } from '../db/memory-store.js';
+import { MemoryRateLimiter } from '../spam/index.js';
 
 // The runtime is pinned to globalThis rather than a module-scoped variable
 // so it survives the multiple module-instance situation Astro creates: the
@@ -28,6 +29,7 @@ export function getRuntime(): FormsRuntime {
       store: new MemorySubmissionStore(),
       notificationDrivers: new Map(),
       feedHandlers: new Map(),
+      rateLimiter: new MemoryRateLimiter(),
     };
   }
   return g[RUNTIME_KEY]!;

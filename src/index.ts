@@ -29,10 +29,31 @@ export { evaluateConditional } from './core/conditional.js';
 export { renderMergeTags, renderMergeTagsRecord } from './core/merge-tags.js';
 export { registerForm, registerForms, getForm, getAllForms } from './core/registry.js';
 
+// Spam guard (honeypot, signed timestamp, rate limit)
+export type {
+  SpamConfig,
+  ResolvedSpamConfig,
+  RateLimiter,
+  RateLimitResult,
+} from './spam/index.js';
+export {
+  DEFAULT_SPAM_CONFIG,
+  TIMESTAMP_FIELD,
+  resolveSpamConfig,
+  signTimestamp,
+  verifyTimestamp,
+  MemoryRateLimiter,
+} from './spam/index.js';
+export { getRenderSpamFields, type RenderSpamFields } from './spam/render.js';
+
 // Default implementations
 export { MemorySubmissionStore } from './db/memory-store.js';
 export { WebhookDriver } from './notifications/webhook.js';
 export { EmailDriver, type EmailMessage, type EmailSender } from './notifications/email.js';
+
+// Runtime configuration — call from user code (middleware / API route) so the
+// registry and drivers are wired up at server runtime, not just build time.
+export { configureForms, type ConfigureFormsOptions } from './runtime/index.js';
 
 import { registerForm as _registerForm } from './core/registry.js';
 

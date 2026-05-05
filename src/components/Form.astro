@@ -9,7 +9,7 @@
 // — the same module instance `defineForm` writes to. Going relative would
 // trigger Vite's TS resolver to load `src/core/registry.ts` as a separate
 // module, leaving Form.astro looking at an empty registry.
-import { getForm } from 'forms-of-stars';
+import { getForm, getRenderSpamFields } from 'forms-of-stars';
 import Field from './Field.astro';
 
 interface Props {
@@ -22,9 +22,38 @@ interface Props {
   errors?: Record<string, string>;
   /** Optional class on the outer <form> element */
   class?: string;
+  /** Submit via fetch and replace the form with the confirmation message
+   *  instead of doing a full page reload. Default: true. The form still
+   *  works without JS — the server falls back to a 303 redirect. */
+  ajax?: boolean;
+  /** Animate the submit → success transition. Default: true. Set to false
+   *  for an instant DOM swap. Tune timing/colors via CSS custom properties
+   *  on `.af-form-shell` (see the bottom of this file's <style>). */
+  animation?: boolean;
+  /** Optional class on the outer shell wrapper (useful for scoping
+   *  consumer-side CSS overrides on `.af-form-shell`). */
+  shellClass?: string;
+  /** After a successful submission, show a "Submit another" button inside
+   *  the confirmation that resets the form to its initial state — the same
+   *  transition runs in reverse. Default: false (form stays replaced by
+   *  the confirmation indefinitely). */
+  multiple?: boolean;
+  /** Label for the reset button shown when `multiple` is true. */
+  multipleLabel?: string;
 }
 
-const { id, action: actionOverride, values = {}, errors = {}, class: className } = Astro.props;
+const {
+  id,
+  action: actionOverride,
+  values = {},
+  errors = {},
+  class: className,
+  ajax = true,
+  animation = true,
+  shellClass,
+  multiple = false,
+  multipleLabel = 'Submit another',
+} = Astro.props;
 
 const form = getForm(id);
 if (!form) {
@@ -39,46 +68,80 @@ const errorFlag = url.searchParams.get('astro_forms_error') === '1';
 
 // Surface the first message-type confirmation for inline display
 const messageConfirmation = form.confirmations?.find((c) => c.type === 'message');
+
+// Resolve spam-guard fields: an effective honeypot name (or null when the
+// form has opted out / collides with a real field), plus a freshly-signed
+// timestamp token that the server checks against minSubmitMs / maxSubmitMs.
+// Static-rendered pages will bake a fixed token into the HTML — that's fine
+// for the max-age check (24h default) but means minSubmitMs effectively
+// becomes the time since build, not since render. Use SSR for forms where
+// that distinction matters.
+const spamFields = getRenderSpamFields(form);
 ---
 
-<form
-  method="POST"
-  action={action}
-  class:list={['af-form', className]}
-  data-af-form-id={form.id}
-  enctype={form.fields.some((f) => f.type === 'file') ? 'multipart/form-data' : undefined}
+<div
+  class:list={['af-form-shell', shellClass]}
+  data-af-state={successFlag ? 'success' : 'idle'}
+  data-af-animation={animation ? 'true' : 'false'}
+  data-af-multiple={multiple ? 'true' : undefined}
 >
-  {successFlag && messageConfirmation?.type === 'message' && (
-    <div class="af-form__success" role="status">{messageConfirmation.message}</div>
-  )}
+  <form
+    method="POST"
+    action={action}
+    class:list={['af-form', className]}
+    data-af-form-id={form.id}
+    data-af-ajax={ajax ? 'true' : undefined}
+    enctype={form.fields.some((f) => f.type === 'file') ? 'multipart/form-data' : undefined}
+  >
+    {errorFlag && (
+      <div class="af-form__error-banner" role="alert">
+        Please fix the errors below and resubmit.
+      </div>
+    )}
 
-  {errorFlag && (
-    <div class="af-form__error-banner" role="alert">
-      Please fix the errors below and resubmit.
-    </div>
-  )}
+    {spamFields.honeypot && (
+      <div class="af-honeypot" aria-hidden="true" style="position:absolute;left:-9999px;height:0;overflow:hidden">
+        <label>
+          Leave this field empty
+          <input type="text" name={spamFields.honeypot} tabindex="-1" autocomplete="off" />
+        </label>
+      </div>
+    )}
 
-  {form.honeypot && (
-    <div class="af-honeypot" aria-hidden="true" style="position:absolute;left:-9999px;height:0;overflow:hidden">
-      <label>
-        Leave this field empty
-        <input type="text" name={form.honeypot} tabindex="-1" autocomplete="off" />
-      </label>
-    </div>
-  )}
+    {spamFields.timestampToken && (
+      <input type="hidden" name={spamFields.timestampField} value={spamFields.timestampToken} />
+    )}
 
-  {form.fields.map((field) => (
-    <Field
-      field={field}
-      value={values[field.id]}
-      error={errors[field.id]}
-    />
-  ))}
+    {form.fields.map((field) => (
+      <Field
+        field={field}
+        value={values[field.id]}
+        error={errors[field.id]}
+      />
+    ))}
 
-  <button type="submit" class="af-form__submit">
-    {form.submitLabel ?? 'Submit'}
-  </button>
-</form>
+    <button type="submit" class="af-form__submit">
+      <span class="af-form__submit-label">{form.submitLabel ?? 'Submit'}</span>
+      <span class="af-form__submit-spinner" aria-hidden="true"></span>
+    </button>
+
+    <span class="af-form__progress" aria-hidden="true"></span>
+  </form>
+
+  <div class="af-form__success" role="status" aria-live="polite">
+    <p class="af-form__success-message">
+      {successFlag && messageConfirmation?.type === 'message'
+        ? messageConfirmation.message
+        : 'Thank you for your form submission!'}
+    </p>
+    <span class="af-form__success-rule" aria-hidden="true"></span>
+    {multiple && (
+      <button type="button" class="af-form__success-reset">
+        {multipleLabel}
+      </button>
+    )}
+  </div>
+</div>
 
 <script>
   // Tiny progressive-enhancement script: handles conditional logic on the client.
@@ -125,34 +188,662 @@ const messageConfirmation = form.confirmations?.find((c) => c.type === 'message'
       evaluate();
     });
   })();
+
+  // AJAX submission with a choreographed transition between submit / success.
+  // Forms marked [data-af-ajax] post via fetch; the surrounding [data-af-state]
+  // shell gates the visual state machine (idle → submitting → success | error).
+  // Without JS the form falls back to a normal POST → 303 redirect.
+  (() => {
+    const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+    const shells = document.querySelectorAll<HTMLElement>('.af-form-shell');
+    shells.forEach((shell) => {
+      const form = shell.querySelector<HTMLFormElement>('form.af-form[data-af-ajax="true"]');
+      if (!form) return;
+
+      const animate = shell.dataset.afAnimation === 'true' && !reduceMotion;
+      const successEl = shell.querySelector<HTMLElement>('.af-form__success');
+      const successMsg = shell.querySelector<HTMLElement>('.af-form__success-message');
+      const resetBtn = shell.querySelector<HTMLButtonElement>('.af-form__success-reset');
+
+      // Reset path (only present when `multiple` prop is true). Runs the same
+      // transition in reverse: pin shell to current success height, swap state,
+      // animate to the form's natural height, then release. Form fields are
+      // cleared via form.reset() and any lingering error UI is removed.
+      resetBtn?.addEventListener('click', () => {
+        if (animate && successEl) {
+          const successHeight = successEl.getBoundingClientRect().height;
+          shell.style.height = `${successHeight}px`;
+          void shell.offsetHeight;
+
+          form.reset();
+          form.querySelectorAll('.af-field--error').forEach((el) => el.classList.remove('af-field--error'));
+          form.querySelectorAll('.af-field__error').forEach((el) => el.remove());
+          form.querySelectorAll('[data-af-runtime-banner]').forEach((el) => el.remove());
+
+          shell.dataset.afState = 'idle';
+          const formHeight = form.scrollHeight;
+          shell.style.height = `${formHeight}px`;
+
+          shell.addEventListener(
+            'transitionend',
+            (e) => {
+              if (e.target === shell && e.propertyName === 'height') {
+                shell.style.height = '';
+                form.querySelector<HTMLElement>('input, select, textarea')?.focus();
+              }
+            },
+            { once: true },
+          );
+        } else {
+          form.reset();
+          form.querySelectorAll('.af-field--error').forEach((el) => el.classList.remove('af-field--error'));
+          form.querySelectorAll('.af-field__error').forEach((el) => el.remove());
+          form.querySelectorAll('[data-af-runtime-banner]').forEach((el) => el.remove());
+          shell.dataset.afState = 'idle';
+          form.querySelector<HTMLElement>('input, select, textarea')?.focus();
+        }
+      });
+
+      form.addEventListener('submit', async (event) => {
+        event.preventDefault();
+
+        // Clear previous errors (SSR-rendered or runtime-injected)
+        form.querySelectorAll('.af-field--error').forEach((el) => el.classList.remove('af-field--error'));
+        form.querySelectorAll('.af-field__error').forEach((el) => el.remove());
+        form.querySelectorAll('[data-af-runtime-banner]').forEach((el) => el.remove());
+
+        // Submitting state — CSS covers the dim, the spinner, and the
+        // progress bar. The 240ms grace lives in CSS via animation-delay.
+        shell.dataset.afState = 'submitting';
+
+        let res: Response;
+        try {
+          res = await fetch(form.action, {
+            method: 'POST',
+            body: new FormData(form),
+            headers: { Accept: 'application/json' },
+          });
+        } catch (err) {
+          shell.dataset.afState = 'idle';
+          showSubmitError(form, 'Submission failed — please try again or contact us directly.');
+          return;
+        }
+
+        if (!res.ok && res.status !== 422) {
+          shell.dataset.afState = 'idle';
+          showSubmitError(form, 'Submission failed — please try again or contact us directly.');
+          return;
+        }
+
+        const data = await res.json();
+
+        if (!data.ok) {
+          shell.dataset.afState = 'idle';
+          showFieldErrors(form, (data.errors ?? {}) as Record<string, string>);
+          return;
+        }
+
+        // Feed redirects and confirmation redirects bypass the success
+        // animation — we hand control to the browser. The submitting state
+        // remains visible until navigation begins.
+        if (data.redirect) { window.location.assign(data.redirect); return; }
+        const conf = data.confirmation;
+        if (conf?.type === 'redirect') {
+          const target = conf.queryString
+            ? `${conf.url}${conf.url.includes('?') ? '&' : '?'}${conf.queryString}`
+            : conf.url;
+          window.location.assign(target);
+          return;
+        }
+        if (conf?.type === 'page') {
+          window.location.assign(conf.pageSlug);
+          return;
+        }
+
+        // Message confirmation — drive the shell into success.
+        const message = (conf?.type === 'message' && conf.message)
+          ? conf.message
+          : 'Thank you for your form submission!';
+        if (successMsg) successMsg.textContent = message;
+
+        if (animate && successEl) {
+          // Pin the shell to the form's current height so the page doesn't
+          // snap when the form's contents fade out, then animate to the
+          // success element's height. After settling, release to auto.
+          const formHeight = form.getBoundingClientRect().height;
+          shell.style.height = `${formHeight}px`;
+          // Force a reflow so the next change actually transitions.
+          void shell.offsetHeight;
+          shell.dataset.afState = 'success';
+
+          // Measure the success element's natural height (it's now opacity
+          // 0 → 1 in the queue, but still laid out by grid). Use scrollHeight
+          // as a stable measure independent of opacity.
+          const successHeight = successEl.scrollHeight;
+          shell.style.height = `${successHeight}px`;
+
+          shell.addEventListener(
+            'transitionend',
+            (e) => {
+              if (e.target === shell && e.propertyName === 'height') {
+                shell.style.height = '';
+              }
+            },
+            { once: true },
+          );
+        } else {
+          shell.dataset.afState = 'success';
+        }
+
+        successEl?.scrollIntoView({ behavior: animate ? 'smooth' : 'auto', block: 'nearest' });
+      });
+    });
+
+    function showFieldErrors(form: HTMLFormElement, errors: Record<string, string>) {
+      let firstErrorWrapper: HTMLElement | null = null;
+      for (const [fieldId, message] of Object.entries(errors)) {
+        const input = form.querySelector<HTMLElement>(`[name="${CSS.escape(fieldId)}"]`);
+        const wrapper = input?.closest<HTMLElement>('.af-field');
+        if (!wrapper || !input) continue;
+        wrapper.classList.add('af-field--error');
+        input.setAttribute('aria-invalid', 'true');
+        input.setAttribute('aria-describedby', `field-${fieldId}-error`);
+
+        const p = document.createElement('p');
+        p.id = `field-${fieldId}-error`;
+        p.className = 'af-field__error';
+        p.setAttribute('role', 'alert');
+        p.textContent = message;
+        wrapper.appendChild(p);
+        if (!firstErrorWrapper) firstErrorWrapper = wrapper;
+      }
+
+      const banner = document.createElement('div');
+      banner.className = 'af-form__error-banner';
+      banner.setAttribute('role', 'alert');
+      banner.dataset.afRuntimeBanner = 'true';
+      banner.textContent = 'Please fix the errors below and resubmit.';
+      form.prepend(banner);
+
+      const focusTarget = firstErrorWrapper?.querySelector<HTMLElement>('input, select, textarea');
+      firstErrorWrapper?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      focusTarget?.focus();
+    }
+
+    function showSubmitError(form: HTMLFormElement, message: string) {
+      const banner = document.createElement('div');
+      banner.className = 'af-form__error-banner';
+      banner.setAttribute('role', 'alert');
+      banner.dataset.afRuntimeBanner = 'true';
+      banner.textContent = message;
+      form.prepend(banner);
+    }
+  })();
 </script>
 
 <style>
-  .af-form { display: flex; flex-direction: column; gap: 1rem; }
-  .af-field { display: flex; flex-direction: column; gap: 0.25rem; }
-  .af-field__label { font-weight: 600; }
-  .af-field__required { color: #c00; }
-  .af-field__description { font-size: 0.875rem; color: #666; margin: 0; }
-  .af-field__error { font-size: 0.875rem; color: #c00; margin: 0; }
-  .af-field--error input, .af-field--error select, .af-field--error textarea {
-    border-color: #c00;
+  /* ─────────────────────────────────────────────────────────────────────
+   * Override surface — set any of these on `.af-form-shell` (or a parent)
+   * to retune the submission animation without forking the library.
+   *
+   *   :global(.af-form-shell) {
+   *     --af-accent: #2F6F57;
+   *     --af-anim-out-duration: 200ms;
+   *     --af-anim-in-duration: 360ms;
+   *     --af-anim-ease: cubic-bezier(0.23, 1, 0.32, 1);
+   *   }
+   *
+   * Disable the animation entirely with the `animation={false}` prop
+   * (sets data-af-animation="false") or via prefers-reduced-motion.
+   * ───────────────────────────────────────────────────────────────────── */
+  .af-form-shell {
+    /* Color tokens. Default to a near-black accent so an unstyled form
+     * looks intentional on a white page. Override --af-accent (and
+     * --af-on-accent for submit text) to brand. */
+    --af-accent: oklch(0.22 0.01 240);
+    --af-on-accent: #ffffff;
+    --af-text: currentColor;
+    --af-text-muted: color-mix(in oklch, currentColor 55%, transparent);
+    --af-border: color-mix(in oklch, currentColor 18%, transparent);
+    --af-border-strong: color-mix(in oklch, currentColor 32%, transparent);
+    --af-input-bg: transparent;
+    --af-error: #b3261e;
+
+    /* Spacing. The default layout is a single-column stack with generous
+     * breathing room between fields — pair fields side-by-side by adding
+     * `cssClass: "af-field--half"` to two adjacent FieldDefinitions. */
+    --af-gap: 1.75rem;
+    --af-gap-tight: 0.5rem;
+    --af-input-pad-y: 0.85rem;
+    --af-input-pad-x: 1rem;
+    --af-submit-pad-y: 1rem;
+    --af-submit-pad-x: 1.75rem;
+
+    /* Typography. Inputs and buttons inherit `font-family` from the page.
+     * Labels default to mixed-case at normal label size — opt into the
+     * editorial uppercase-tracked treatment via:
+     *   --af-label-size: 0.72rem;
+     *   --af-label-tracking: 0.18em;
+     *   --af-label-transform: uppercase;
+     *   --af-label-color: var(--af-text-muted);
+     * The submit button keeps a uppercase letter-spaced label by default
+     * because that's the more universal "primary action" treatment. */
+    --af-label-size: 0.9rem;
+    --af-label-weight: 500;
+    --af-label-tracking: 0;
+    --af-label-transform: none;
+    --af-label-color: var(--af-text);
+    --af-required-color: var(--af-error);
+    --af-input-size: 0.95rem;
+    --af-input-weight: 400;
+    --af-submit-size: 0.72rem;
+    --af-submit-weight: 600;
+    --af-submit-tracking: 0.22em;
+    --af-error-size: 0.78rem;
+
+    /* Shape. */
+    --af-radius: 0;
+    --af-input-border-width: 1px;
+
+    /* Animation. */
+    --af-anim-out-duration: 220ms;
+    --af-anim-in-duration: 320ms;
+    --af-anim-height-duration: 360ms;
+    --af-anim-grace-delay: 240ms;
+    --af-anim-ease: cubic-bezier(0.22, 1, 0.36, 1);
+    --af-progress-thickness: 1px;
+    --af-success-rule-thickness: 1px;
+    --af-success-rule-width: 48px;
+
+    display: grid;
+    grid-template-columns: 1fr;
+    color: var(--af-text);
+    transition: height var(--af-anim-height-duration) var(--af-anim-ease);
   }
-  .af-field__group { display: flex; flex-direction: column; gap: 0.25rem; border: 0; padding: 0; margin: 0; }
-  .af-field__option { display: flex; gap: 0.5rem; align-items: center; }
-  .af-field__product { display: flex; gap: 0.5rem; align-items: center; }
-  .af-form__submit {
-    align-self: flex-start;
-    padding: 0.6rem 1.2rem;
-    cursor: pointer;
+
+  /* Form and success element occupy the same grid cell so the shell's
+   * height is governed by whichever is currently shown. We stack them on
+   * top of each other and toggle visibility with state. */
+  .af-form-shell > .af-form,
+  .af-form-shell > .af-form__success {
+    grid-column: 1;
+    grid-row: 1;
+    transition:
+      opacity var(--af-anim-out-duration) var(--af-anim-ease),
+      transform var(--af-anim-out-duration) var(--af-anim-ease),
+      visibility 0s linear var(--af-anim-out-duration);
   }
+
+  /* Default form layout: 2-column grid where every direct child spans both
+   * columns. Fields opted into `af-field--half` (e.g. first/last name) take
+   * a single column so they pair up. Drops to one column under 640px. */
+  .af-form {
+    position: relative;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: var(--af-gap);
+  }
+  /* `:global()` removes Astro's scoping requirement on the child selectors
+   * — Field.astro has no <style> of its own, so the rendered .af-field
+   * elements don't carry Form.astro's scope and a plain `.af-form > *`
+   * rule wouldn't match them (they'd auto-flow into grid cells instead of
+   * spanning the full row). */
+  .af-form > :global(*) { grid-column: 1 / -1; }
+  .af-form > :global(.af-field--half) { grid-column: span 1; }
+  @media (max-width: 640px) {
+    .af-form > :global(.af-field--half) { grid-column: 1 / -1; }
+  }
+
+  /* Idle — form visible, success hidden. */
+  .af-form-shell[data-af-state="idle"] > .af-form,
+  .af-form-shell[data-af-state="submitting"] > .af-form {
+    opacity: 1;
+    transform: none;
+    visibility: visible;
+    transition-delay: 0s;
+  }
+  .af-form-shell[data-af-state="idle"] > .af-form__success,
+  .af-form-shell[data-af-state="submitting"] > .af-form__success {
+    opacity: 0;
+    transform: translateY(8px);
+    visibility: hidden;
+    pointer-events: none;
+  }
+
+  /* Submitting — fields dim, pointer disabled, progress line draws after grace.
+   * `:global(.af-field)` because Field.astro is a separate component and
+   * its rendered elements don't carry Form.astro's scope. */
+  .af-form-shell[data-af-state="submitting"] > .af-form > :global(.af-field),
+  .af-form-shell[data-af-state="submitting"] > .af-form > .af-form__error-banner,
+  .af-form-shell[data-af-state="submitting"] > .af-form > .af-form__submit {
+    transition: opacity var(--af-anim-out-duration) var(--af-anim-ease);
+  }
+  .af-form-shell[data-af-state="submitting"] > .af-form > :global(.af-field) {
+    opacity: 0.55;
+    pointer-events: none;
+  }
+  .af-form-shell[data-af-state="submitting"] > .af-form > .af-form__submit {
+    cursor: progress;
+  }
+  .af-form-shell[data-af-state="submitting"] > .af-form .af-form__submit-spinner {
+    opacity: 1;
+    width: 0.85em;
+    margin-inline-start: 0.6em;
+  }
+  .af-form-shell[data-af-state="submitting"] > .af-form .af-form__progress {
+    opacity: 1;
+    animation:
+      af-progress-fill 1.4s var(--af-anim-ease) var(--af-anim-grace-delay) forwards,
+      af-progress-sweep 1.6s linear calc(var(--af-anim-grace-delay) + 1.4s) infinite;
+  }
+
+  /* Success — form fades out, then shell height transitions to success
+   * height; success element fades in afterward. */
+  .af-form-shell[data-af-state="success"] > .af-form {
+    opacity: 0;
+    transform: translateY(-6px);
+    visibility: hidden;
+    pointer-events: none;
+  }
+  .af-form-shell[data-af-state="success"] > .af-form__success {
+    opacity: 1;
+    transform: none;
+    visibility: visible;
+    transition:
+      opacity var(--af-anim-in-duration) var(--af-anim-ease) var(--af-anim-out-duration),
+      transform var(--af-anim-in-duration) var(--af-anim-ease) var(--af-anim-out-duration),
+      visibility 0s linear var(--af-anim-out-duration);
+  }
+  .af-form-shell[data-af-state="success"] > .af-form__success > .af-form__success-rule {
+    transform: scaleX(1);
+  }
+
+  /* The thin progress line sits along the bottom of the form. */
+  .af-form__progress {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: var(--af-progress-thickness);
+    background: var(--af-accent);
+    transform-origin: left center;
+    transform: scaleX(0);
+    opacity: 0;
+    pointer-events: none;
+  }
+
+  @keyframes af-progress-fill {
+    from { transform: scaleX(0); }
+    to   { transform: scaleX(0.7); }
+  }
+  @keyframes af-progress-sweep {
+    0%   { transform: scaleX(0.7) translateX(0%);   }
+    50%  { transform: scaleX(0.7) translateX(40%);  }
+    100% { transform: scaleX(0.7) translateX(0%);   }
+  }
+
+  /* Success element. The default styling is intentionally restrained —
+   * a thin top border, generous padding, and a short accent rule beneath
+   * the message. Consumers will typically override this entire block via
+   * `:global(.af-form__success)` to match their site palette. */
   .af-form__success {
-    padding: 0.75rem 1rem;
-    background: #e8f5e9;
-    border-left: 4px solid #2e7d32;
+    display: flex;
+    flex-direction: column;
+    gap: 0.85rem;
+    padding: 1.1rem 1.25rem;
+    border: 1px solid color-mix(in oklch, var(--af-accent) 24%, transparent);
+    background: color-mix(in oklch, var(--af-accent) 6%, transparent);
   }
+  .af-form__success-message {
+    margin: 0;
+    line-height: 1.55;
+  }
+  .af-form__success-rule {
+    display: block;
+    width: var(--af-success-rule-width);
+    height: var(--af-success-rule-thickness);
+    background: var(--af-accent);
+    transform: scaleX(0);
+    transform-origin: left center;
+    transition: transform var(--af-anim-in-duration) var(--af-anim-ease)
+      calc(var(--af-anim-out-duration) + 80ms);
+  }
+
+  /* Reset button — appears inside the success element when `multiple` is true.
+   * Designed as a ghost-styled sibling to the submit button: same padding,
+   * uppercase letter-spaced label, but transparent background + accent
+   * outline. Hover/focus fills with the accent (using --af-on-accent for
+   * contrast text), matching the submit button's visual weight. */
+  .af-form__success-reset {
+    width: var(--af-submit-width, max-content);
+    align-self: start;
+    margin-top: 0.25rem;
+    padding: var(--af-submit-pad-y) var(--af-submit-pad-x);
+    background: transparent;
+    color: var(--af-text);
+    border: 1px solid color-mix(in oklch, var(--af-accent) 40%, transparent);
+    border-radius: var(--af-radius);
+    font: inherit;
+    font-size: var(--af-submit-size);
+    font-weight: var(--af-submit-weight);
+    letter-spacing: var(--af-submit-tracking);
+    text-transform: uppercase;
+    cursor: pointer;
+    transition:
+      background var(--af-anim-out-duration) var(--af-anim-ease),
+      color var(--af-anim-out-duration) var(--af-anim-ease),
+      border-color var(--af-anim-out-duration) var(--af-anim-ease);
+  }
+  .af-form__success-reset:hover,
+  .af-form__success-reset:focus-visible {
+    background: var(--af-accent);
+    color: var(--af-on-accent);
+    border-color: var(--af-accent);
+    outline: none;
+  }
+
+  /* Submit button — filled with --af-accent, generous padding, letter-spaced
+   * uppercase label. Designed to read as "primary action" without further
+   * styling. The in-button spinner is a 1px ring on --af-on-accent.
+   * `width: max-content` keeps it auto-sized to content even though the
+   * grid cell spans the full row (`justify-self: start` alone isn't always
+   * enough — UA defaults plus content stretching can grow it). Override
+   * with `--af-submit-width: 100%` if a full-width primary action is
+   * preferred. */
+  .af-form__submit {
+    width: var(--af-submit-width, max-content);
+    align-self: start;
+    justify-self: start;
+    display: inline-flex;
+    align-items: center;
+    padding: var(--af-submit-pad-y) var(--af-submit-pad-x);
+    background: var(--af-accent);
+    color: var(--af-on-accent);
+    border: none;
+    border-radius: var(--af-radius);
+    font: inherit;
+    font-size: var(--af-submit-size);
+    font-weight: var(--af-submit-weight);
+    letter-spacing: var(--af-submit-tracking);
+    text-transform: uppercase;
+    cursor: pointer;
+    transition:
+      background var(--af-anim-out-duration) var(--af-anim-ease),
+      transform var(--af-anim-out-duration) var(--af-anim-ease),
+      box-shadow var(--af-anim-out-duration) var(--af-anim-ease);
+  }
+  .af-form__submit:hover,
+  .af-form__submit:focus-visible {
+    background: color-mix(in oklch, var(--af-accent) 88%, white);
+    transform: translateY(-1px);
+    box-shadow: 0 8px 24px color-mix(in oklch, var(--af-accent) 28%, transparent);
+    outline: none;
+  }
+  .af-form__submit:disabled,
+  .af-form-shell[data-af-state="submitting"] .af-form__submit {
+    transform: none;
+    box-shadow: none;
+  }
+  .af-form__submit-label {
+    transition: opacity 160ms var(--af-anim-ease);
+  }
+  .af-form__submit-spinner {
+    display: inline-block;
+    width: 0;
+    height: 0.85em;
+    aspect-ratio: 1;
+    margin-inline-start: 0;
+    border-radius: 50%;
+    border: 1px solid currentColor;
+    border-top-color: transparent;
+    opacity: 0;
+    animation: af-spin 720ms linear infinite;
+    transition:
+      opacity 160ms var(--af-anim-ease),
+      width 160ms var(--af-anim-ease),
+      margin-inline-start 160ms var(--af-anim-ease);
+  }
+
+  @keyframes af-spin {
+    to { transform: rotate(360deg); }
+  }
+
+  /* Field. All .af-field*, label, input, select, textarea selectors below
+   * are wrapped in :global() because the elements are rendered by Field.astro
+   * (a separate component) — Astro auto-scopes Form.astro's selectors with
+   * a Form-specific data-attr that the field elements don't carry. Without
+   * :global the rules wouldn't match and the whole field treatment would
+   * fall back to UA defaults. */
+  :global(.af-field) {
+    display: flex;
+    flex-direction: column;
+    gap: var(--af-gap-tight);
+    min-width: 0;
+  }
+  :global(.af-field__label) {
+    font-size: var(--af-label-size);
+    font-weight: var(--af-label-weight);
+    letter-spacing: var(--af-label-tracking);
+    text-transform: var(--af-label-transform);
+    color: var(--af-label-color);
+  }
+  :global(.af-field__required) {
+    color: var(--af-required-color);
+    margin-inline-start: 0.15em;
+  }
+  :global(.af-field__description) {
+    font-size: 0.78rem;
+    color: var(--af-text-muted);
+    margin: 0;
+    line-height: 1.5;
+  }
+  :global(.af-field__error) {
+    font-size: var(--af-error-size);
+    font-weight: 500;
+    color: var(--af-error);
+    margin: 0;
+    letter-spacing: 0.02em;
+  }
+  :global(.af-field__group) {
+    display: flex;
+    flex-direction: column;
+    gap: var(--af-gap-tight);
+    border: 0;
+    padding: 0;
+    margin: 0;
+  }
+  :global(.af-field__option) { display: flex; gap: 0.6rem; align-items: center; }
+  :global(.af-field__product) { display: flex; gap: 0.6rem; align-items: center; }
+
+  /* Inputs. */
+  :global(.af-form input),
+  :global(.af-form select),
+  :global(.af-form textarea) {
+    width: 100%;
+    padding: var(--af-input-pad-y) var(--af-input-pad-x);
+    background: var(--af-input-bg);
+    color: var(--af-text);
+    font: inherit;
+    font-size: var(--af-input-size);
+    font-weight: var(--af-input-weight);
+    border: var(--af-input-border-width) solid var(--af-border);
+    border-radius: var(--af-radius);
+    transition:
+      border-color var(--af-anim-out-duration) var(--af-anim-ease),
+      box-shadow var(--af-anim-out-duration) var(--af-anim-ease);
+  }
+  :global(.af-form input::placeholder),
+  :global(.af-form textarea::placeholder) {
+    color: var(--af-text-muted);
+    opacity: 1;
+  }
+  :global(.af-form input:hover),
+  :global(.af-form select:hover),
+  :global(.af-form textarea:hover) {
+    border-color: var(--af-border-strong);
+  }
+  :global(.af-form input:focus),
+  :global(.af-form select:focus),
+  :global(.af-form textarea:focus) {
+    outline: none;
+    border-color: var(--af-accent);
+    box-shadow: 0 0 0 3px color-mix(in oklch, var(--af-accent) 18%, transparent);
+  }
+  :global(.af-form textarea) {
+    min-height: 7rem;
+    resize: vertical;
+  }
+  :global(.af-form select) { cursor: pointer; }
+
+  /* Error states on fields. */
+  :global(.af-field--error input),
+  :global(.af-field--error select),
+  :global(.af-field--error textarea) {
+    border-color: var(--af-error);
+  }
+  :global(.af-field--error input:focus),
+  :global(.af-field--error select:focus),
+  :global(.af-field--error textarea:focus) {
+    box-shadow: 0 0 0 3px color-mix(in oklch, var(--af-error) 18%, transparent);
+  }
+
+  /* Error banner — full-border tinted block, no side stripe. */
   .af-form__error-banner {
-    padding: 0.75rem 1rem;
-    background: #fff4f4;
-    border-left: 4px solid #c00;
+    padding: 0.85rem 1.1rem;
+    border: 1px solid color-mix(in oklch, var(--af-error) 32%, transparent);
+    background: color-mix(in oklch, var(--af-error) 6%, transparent);
+    color: color-mix(in oklch, var(--af-error) 80%, black);
+    font-size: var(--af-error-size);
+    font-weight: 500;
+    letter-spacing: 0.02em;
+  }
+
+  /* Reduced motion / opt-out — collapse the choreography to instant swaps. */
+  .af-form-shell[data-af-animation="false"],
+  .af-form-shell[data-af-animation="false"] > .af-form,
+  .af-form-shell[data-af-animation="false"] > .af-form__success,
+  .af-form-shell[data-af-animation="false"] > .af-form > :global(.af-field),
+  .af-form-shell[data-af-animation="false"] .af-form__progress,
+  .af-form-shell[data-af-animation="false"] .af-form__success-rule,
+  .af-form-shell[data-af-animation="false"] .af-form__submit-spinner {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .af-form-shell,
+    .af-form-shell > .af-form,
+    .af-form-shell > .af-form__success,
+    .af-form-shell > .af-form > :global(.af-field),
+    .af-form__progress,
+    .af-form__success-rule,
+    .af-form__submit-spinner {
+      transition-duration: 0.01ms !important;
+      animation-duration: 0.01ms !important;
+    }
+    .af-form-shell[data-af-state="success"] > .af-form__success-rule {
+      transform: scaleX(1);
+    }
   }
 </style>

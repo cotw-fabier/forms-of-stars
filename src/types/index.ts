@@ -6,6 +6,9 @@
  */
 
 import type { z } from 'zod';
+import type { SpamConfig } from '../spam/index.js';
+
+export type { SpamConfig, ResolvedSpamConfig, RateLimiter, RateLimitResult } from '../spam/index.js';
 
 // ───────────────────────────────────────────────────────────────────────────
 // Field types
@@ -171,8 +174,17 @@ export interface FormDefinition {
   notifications?: NotificationDefinition[];
   feeds?: FeedDefinition[];
 
-  /** Honeypot field name — if present and filled, the submission is silently dropped */
+  /** Honeypot field name. Shortcut for `spam.honeypot`. If present and filled,
+   *  the submission is silently dropped. Leaving this unset uses the spam-config
+   *  default (currently "website"). Set `spam: false` for full opt-out. */
   honeypot?: string;
+
+  /** Spam-guard tuning: honeypot field name, time-to-submit window, and per-IP
+   *  rate limit. Each layer is on by default with sensible values; override
+   *  individual fields here, or set the whole property to `false` to disable
+   *  all three. The HMAC secret used for time-token signing usually comes from
+   *  `configureForms({ spam: { secret } })` at the runtime level, not per-form. */
+  spam?: SpamConfig | false;
 
   /** Enable Cloudflare Turnstile / hCaptcha / reCAPTCHA — provider configured at integration level */
   captcha?: boolean;
