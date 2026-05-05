@@ -7,7 +7,8 @@ import type { FormDefinition } from '../types/index.js';
 const registry = new Map<string, FormDefinition>();
 
 export function registerForm(form: FormDefinition): void {
-  if (registry.has(form.id)) {
+  const existing = registry.get(form.id);
+  if (existing && existing !== form) {
     throw new Error(
       `[forms-of-stars] Duplicate form id: "${form.id}". Form ids must be unique across the app.`,
     );

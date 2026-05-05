@@ -5,7 +5,11 @@
  * The form id must match a registered FormDefinition. Posts to the integration's
  * mounted endpoint (default `/api/forms/[id]`).
  */
-import { getForm } from '../core/registry.js';
+// Self-reference (not relative) so this resolves to `dist/core/registry.js`
+// — the same module instance `defineForm` writes to. Going relative would
+// trigger Vite's TS resolver to load `src/core/registry.ts` as a separate
+// module, leaving Form.astro looking at an empty registry.
+import { getForm } from 'forms-of-stars';
 import Field from './Field.astro';
 
 interface Props {
